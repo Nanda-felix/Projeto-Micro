@@ -1,114 +1,128 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
-#include <BH1750.h>
-#include <Arduino.h>
-#include <Adafruit_Sensor.h>
 #include <DHT.h>
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/delay.h>
 
-#define DHTPIN 12 
-#define DHTTYPE DHT22
-
+// LCD I2C 
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 
-BH1750 lightMeter;
+// DHT22 no pino D6
+#define DHTPIN 6
+#define DHTTYPE DHT22
 DHT dht(DHTPIN, DHTTYPE);
 
-const int pinBuzzer = 10;
-const int pinRainSensor = A0;
-const int pinPresenceSensor = 3;
+// Buzzer e LED
+#define BUZZER_PIN PB2   // D10
+#define LED_PIN    PB0   // D8
 
-int valorSensor = 0;
-int porcentagemChuva = 0;
+// Flags
+volatile bool flagPresenca = false;
+volatile bool flagChuva = false;
+volatile bool flagLuz = false;
+
+
+volatile bool estadoLed = false;
 
 void setup() {
-  Wire.begin(); 
+  Wire.begin();
   lcd.init();
   lcd.backlight();
-
-  Serial.begin(115200);
-
   dht.begin();
 
-  pinMode(pinBuzzer, OUTPUT);
-  pinMode(pinPresenceSensor, INPUT);
-
-  Serial.println("Iniciando sensores...");
-
-  lcd.setCursor(0, 0);
-  lcd.print("Iniciando...");
-  delay(2000);
-  lcd.clear();
+  
+  DDRB |= (1 << BUZZER_PIN) | (1 << LED_PIN);
 
   
+  DDRD &= ~((1 << PD2) | (1 << PD3) | (1 << PD4));
+  PORTD |= (1 << PD2) | (1 << PD3) | (1 << PD4);
 
-  if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
-    Serial.println("BH1750 iniciado com sucesso.");
-  } else {
-    Serial.println("Erro ao iniciar BH1750.");
-    lcd.print("Erro BH1750");
-    while (1);
-  }
+
+  EICRA |= (1 << ISC01) | (1 << ISC00);
+  EIMSK |= (1 << INT0);
+
+ 
+  EICRA |= (1 << ISC11) | (1 << ISC10);
+  EIMSK |= (1 << INT1);
+
+ 
+  PCICR |= (1 << PCIE2);      
+  PCMSK2 |= (1 << PCINT20);  
+
+  sei(); 
 
   lcd.setCursor(0, 0);
-  lcd.print("Sistema iniciado!");
-  delay(2000);
+  lcd.print("Sistema Iniciado");
+  _delay_ms(2000);
   lcd.clear();
 }
 
 void loop() {
-  // Sensor de chuva
-  valorSensor = analogRead(pinRainSensor);
-  porcentagemChuva = map(valorSensor, 1023, 0, 0, 100);
-
-  // Sensor de presença
-  byte estadoPresenca = digitalRead(pinPresenceSensor);
-  if (estadoPresenca == HIGH) {
-    Serial.println("Movimento detectado!");
-    tone(pinBuzzer, 1000, 200);
-  } else {
-    Serial.println("Sem movimento.");
+  if (flagPresenca) {
+    flagPresenca = false;
+    acionarBuzzer();
   }
 
-  // Sensor de luminosidade
-  float lux = lightMeter.readLightLevel();
-  Serial.print("Luminosidade: ");
-  Serial.print(lux);
-  Serial.println(" lux");
-
-  // LCD - Linha 1: Chuva
-  lcd.setCursor(0, 0);
-  lcd.print("Chuva: ");
-  lcd.print(porcentagemChuva);
-  lcd.print("%     ");
-
-  Serial.print("Chuva: ");
-  Serial.print(porcentagemChuva);
-  Serial.println("%");
-
-  float temp = dht.readTemperature();
-  float hum = dht.readHumidity();
-  
-  if (isnan(temp) || isnan(hum)) {
-    Serial.println("Falha ao ler o DHT22!");
+  if (flagChuva) {
+    flagChuva = false;
+    lcd.setCursor(0, 0);
+    lcd.print("Status: Chovendo ");
   }
-  
-  Serial.print("Temp: ");
-  Serial.print(temp);
-  Serial.println(" °C");
-  Serial.print("Umi: ");
-  Serial.print(hum);
-  Serial.println(" %");
 
-  // LCD - Linha 2: Luminosidade
-  lcd.setCursor(0, 1);
-  if (lux >= 500){
-    lcd.print("Luz: Acesa");
+  if (flagLuz) {
+    flagLuz = false;
+    estadoLed = !estadoLed;
+    if (estadoLed) {
+      PORTB |= (1 << LED_PIN);
+    } else {
+      PORTB &= ~(1 << LED_PIN);
+    }
   }
-  else
-  {
-    lcd.print("Luz: Apagada");
-  }
-  
 
-  delay(1000);
+
+  static unsigned long lastRead = 0;
+  if (millis() - lastRead > 2000) {
+    lastRead = millis();
+    float t = dht.readTemperature();
+    float h = dht.readHumidity();
+
+    if (!isnan(t) && !isnan(h)) {
+      lcd.setCursor(0, 1);
+      lcd.print("Temp: ");
+      lcd.print(t);
+      lcd.print((char)223); 
+      lcd.print("C    ");
+
+      lcd.setCursor(0, 2);
+      lcd.print("Umi:  ");
+      lcd.print(h);
+      lcd.print("%    ");
+    }
+  }
+}
+
+
+ISR(INT0_vect) {
+  flagPresenca = true;
+}
+
+
+ISR(INT1_vect) {
+  flagLuz = true;
+}
+
+
+ISR(PCINT2_vect) {
+
+  if (PIND & (1 << PD4)) {
+    flagChuva = true;
+  }
+}
+
+
+void acionarBuzzer() {
+  PORTB |= (1 << BUZZER_PIN);
+  _delay_ms(200);
+  PORTB &= ~(1 << BUZZER_PIN);
 }
