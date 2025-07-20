@@ -76,12 +76,20 @@ void setup() {
   lcd.print("Sistema Iniciado");
   _delay_ms(2000);
   lcd.clear();
+
+  Serial.begin(9600);
 }
 
 void loop() {
   if (flagPresenca) {
     flagPresenca = false;
-    acionarBuzzer();
+
+    Serial.println("Presenca detectada - acionando buzzer");
+
+    // Liga buzzer
+    PORTB |= (1 << BUZZER_PIN);
+    _delay_ms(1000);  // buzzer ligado por 1 segundo
+    PORTB &= ~(1 << BUZZER_PIN);  // desliga buzzer
   }
 
   if (flagChuva) {
@@ -92,7 +100,7 @@ void loop() {
   if (flagLuz) {
     flagLuz = false;
     estadoLed = !estadoLed;
-    PORTB = (estadoLed) ? PORTB | (1 << LED1_PIN) | (1 << LED2_PIN) : 
+    PORTB = (estadoLed) ? PORTB | (1 << LED1_PIN) | (1 << LED2_PIN) :
                           PORTB & ~((1 << LED1_PIN) | (1 << LED2_PIN));
   }
 
@@ -103,14 +111,13 @@ void loop() {
 
   if (flagAtualizarDHT && !estaChovendo) {
     flagAtualizarDHT = false;
-    
-    // Faz a leitura do sensor
+
     float t = dht.readTemperature();
     float h = dht.readHumidity();
-    
+
     if (!isnan(t)) ultimaTemperatura = t;
     if (!isnan(h)) ultimaUmidade = h;
-    
+
     atualizarDisplay();
   }
 }
@@ -119,23 +126,23 @@ void loop() {
 ISR(TIMER1_COMPA_vect) {
   static uint16_t contador1ms = 0;
   contador1ms++;
-  
+
   // Verificação de luminosidade a cada 1000ms (1s)
-  if(contador1ms % 1000 == 0) {
+  if (contador1ms % 1000 == 0) {
     flagLuminosidade = true;
   }
-  
+
   // Leitura DHT e atualização a cada 2000ms (2s)
-  if(contador1ms >= 2000) {
+  if (contador1ms >= 2000) {
     flagAtualizarDHT = true;
     contador1ms = 0;
   }
 }
 
-// Outras ISRs permanecem iguais
+// Outras ISRs
 ISR(INT0_vect) { flagPresenca = true; }
 ISR(INT1_vect) { flagLuz = true; }
-ISR(PCINT2_vect) { 
+ISR(PCINT2_vect) {
   static unsigned long lastRainTime = 0;
   if (millis() - lastRainTime > 200) {
     estaChovendo = !(PIND & (1 << PD4)); // Lógica corrigida
@@ -144,11 +151,6 @@ ISR(PCINT2_vect) {
   }
 }
 
-void acionarBuzzer() {
-  PORTB |= (1 << BUZZER_PIN);
-  _delay_ms(200);
-  PORTB &= ~(1 << BUZZER_PIN);
-}
 
 void verificarLuminosidade() {
   luminosidade = lightSensor.readLightLevel();
@@ -161,7 +163,7 @@ void verificarLuminosidade() {
 
 void atualizarDisplay() {
   lcd.clear();
-  
+
   if (estaChovendo) {
     lcd.setCursor(0, 0);
     lcd.print("Status: Chovendo ");
