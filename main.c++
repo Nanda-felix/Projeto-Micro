@@ -16,22 +16,25 @@ DHT dht(DHTPIN, DHTTYPE);
 // Sensor de luz I2C
 BH1750 lightSensor;
 
-// LED1 e LED2 (PortB)
-#define LED1_PIN PB0  // D8
-#define LED2_PIN PB1  // D9
+// Buzzer e LEDs (PortB)
+#define BUZZER_PIN PB2  // D10
+#define LED1_PIN PB0    // D8
+#define LED2_PIN PB1    // D9
 
-#define BUZZER_PIN 10 // D10 – buzzer passivo
 #define LIMIAR_LUZ 50
 
+// Flags e variáveis de controle
 volatile bool flagChuva = false;
-volatile bool flagLuz = false;
-volatile bool flagLuminosidade = false;
+volatile bool flagLuminosidade = false;    // **removida a atribuição do timer para esta flag no código**
 volatile bool flagAtualizarDHT = false;
+volatile bool flagAtualizarLEDs = false;   // NOVA flag para INT1
+
 volatile bool estaChovendo = false;
-volatile bool flagPresencaDetectada = false;
 
 volatile float ultimaTemperatura = 0;
 volatile float ultimaUmidade = 0;
+
+volatile bool presencaAtiva = false;
 
 void verificarLuminosidade();
 void atualizarDisplay();
@@ -44,36 +47,33 @@ void setup() {
   dht.begin();
   lightSensor.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
 
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);
+  // Configura pinos de saída
+  DDRB |= (1 << LED1_PIN) | (1 << LED2_PIN) | (1 << BUZZER_PIN);
 
-  // Configura LEDs como saída
-  DDRB |= (1 << LED1_PIN) | (1 << LED2_PIN);
-
-  // Configura pinos de entrada com pull-up (PD2 = INT0, PD3 = INT1, PD4 = sensor de chuva)
+  // Configura pinos de entrada com pull-up
   DDRD &= ~((1 << PD2) | (1 << PD3) | (1 << PD4));
   PORTD |= (1 << PD2) | (1 << PD3) | (1 << PD4);
 
-  // Interrupções externas
-  // INT0 – borda de subida (PD2 – presença)
-  EICRA |= (1 << ISC01) | (1 << ISC00);
+  // Interrupções externas INT0 para sensor de presença em qualquer borda
+  EICRA |= (1 << ISC00);   // qualquer mudança
+  EICRA &= ~(1 << ISC01);
   EIMSK |= (1 << INT0);
 
-  // INT1 – alternar luz (PD3)
+  // INT1 – borda de subida para atualizar LEDs
   EICRA |= (1 << ISC11) | (1 << ISC10);
   EIMSK |= (1 << INT1);
 
-  // PCINT2 – sensor de chuva (PD4)
+  // PCINT para PD4 (chuva)
   PCICR |= (1 << PCIE2);
   PCMSK2 |= (1 << PCINT20);
 
-  // Timer1 – CTC, prescaler 8, 1ms por interrupção
+  // Timer1: modo CTC, prescaler 8, interrupção a cada 1ms
   TCCR1A = 0;
   TCCR1B = (1 << WGM12) | (1 << CS11);
-  OCR1A = 1999;
+  OCR1A = 1999;  // 1ms com clock 16 MHz e prescaler 8
   TIMSK1 = (1 << OCIE1A);
 
-  sei(); // Habilita interrupções globais
+  sei();
 
   lcd.setCursor(0, 0);
   lcd.print("Sistema Iniciado");
@@ -81,69 +81,66 @@ void setup() {
   lcd.clear();
 }
 
-int main() {
-  init(); // inicialização do Arduino core (Serial, timers, etc.)
-  setup();
+void loop() {
+  if (flagChuva) {
+    flagChuva = false;
+    atualizarDisplay();
+  }
 
-  while (1) {
-    if (flagChuva) {
-      flagChuva = false;
-      atualizarDisplay();
-    }
+  if (flagAtualizarLEDs) {
+    flagAtualizarLEDs = false;
+    verificarLuminosidade();
+  }
 
-    if (flagLuz) {
-      flagLuz = false;
-      PORTB ^= (1 << LED1_PIN) | (1 << LED2_PIN);
-    }
+  if (flagAtualizarDHT && !estaChovendo) {
+    flagAtualizarDHT = false;
 
-    if (flagLuminosidade) {
-      flagLuminosidade = false;
-      verificarLuminosidade();
-    }
+    float t = dht.readTemperature();
+    float h = dht.readHumidity();
 
-    if (flagAtualizarDHT && !estaChovendo) {
-      flagAtualizarDHT = false;
+    if (!isnan(t)) ultimaTemperatura = t;
+    if (!isnan(h)) ultimaUmidade = h;
 
-      float t = dht.readTemperature();
-      float h = dht.readHumidity();
+    atualizarDisplay();
+  }
 
-      if (!isnan(t)) ultimaTemperatura = t;
-      if (!isnan(h)) ultimaUmidade = h;
-
-      atualizarDisplay();
-    }
-
-    // Presença detectada – tocar buzzer com tom
-    if (flagPresencaDetectada) {
-      flagPresencaDetectada = false;
-      Serial.println("Presença detectada!");
-
-      tone(BUZZER_PIN, 1000, 1000);  // 2 kHz por 100 ms
-    }
+  // Liga/desliga buzzer conforme presença
+  if (presencaAtiva) {
+    PORTB |= (1 << BUZZER_PIN);
+  } else {
+    PORTB &= ~(1 << BUZZER_PIN);
   }
 }
 
-// --- INTERRUPÇÕES ---
-
+// Timer1 a cada 1ms
 ISR(TIMER1_COMPA_vect) {
   static uint16_t contador1ms = 0;
   contador1ms++;
 
-  if (contador1ms % 1000 == 0) flagLuminosidade = true;
+  // Atualiza DHT a cada 2s
   if (contador1ms >= 2000) {
     flagAtualizarDHT = true;
     contador1ms = 0;
   }
 }
 
+// ISR para sensor de presença (INT0) - detecta qualquer mudança
 ISR(INT0_vect) {
-  flagPresencaDetectada = true;
+  if (PIND & (1 << PD2)) {
+    presencaAtiva = true;
+    Serial.println("Presença ATIVA");
+  } else {
+    presencaAtiva = false;
+    Serial.println("Presença INATIVA");
+  }
 }
 
+// ISR INT1 - acionado para atualizar LEDs conforme sensor de luz
 ISR(INT1_vect) {
-  flagLuz = true;
+  flagAtualizarLEDs = true;
 }
 
+// Chuva via PCINT2
 ISR(PCINT2_vect) {
   static uint16_t debounce = 0;
   if (debounce++ > 200) {
@@ -153,10 +150,11 @@ ISR(PCINT2_vect) {
   }
 }
 
-// --- FUNÇÕES AUXILIARES ---
-
 void verificarLuminosidade() {
   uint16_t lux = lightSensor.readLightLevel();
+  Serial.print("Luminosidade: ");
+  Serial.println(lux);
+
   if (lux < LIMIAR_LUZ) {
     PORTB |= (1 << LED1_PIN) | (1 << LED2_PIN);
   } else {
