@@ -21,7 +21,7 @@ BH1750 lightSensor;
 #define LED1_PIN PB0    // D8
 #define LED2_PIN PB1    // D9
 
-#define LIMIAR_LUZ 60
+#define LIMIAR_LUZ 40
 
 // Flags e variáveis de controle
 volatile bool flagChuva = false;
@@ -39,10 +39,10 @@ volatile bool buzzerLigado = false;
 volatile uint16_t contadorBuzzer = 0;
 const uint16_t DURACAO_BUZZER_MS = 1000; // 1 segundo
 
-// Variáveis para debounce chuva via Timer1
+// Debounce do sensor de chuva
 volatile bool flagEventoChuva = false;
 volatile uint16_t contadorDebounceChuva = 0;
-const uint16_t TEMPO_DEBOUNCE_CHUVA = 200; // debounce 200 ms
+const uint16_t TEMPO_DEBOUNCE_CHUVA = 200;
 volatile bool estadoChuvaTentativa = false;
 
 void verificarLuminosidade();
@@ -56,24 +56,20 @@ void setup() {
   dht.begin();
   lightSensor.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
 
-  // Configura pinos de saída
+  // LEDs e buzzer como saída
   DDRB |= (1 << LED1_PIN) | (1 << LED2_PIN) | (1 << BUZZER_PIN);
 
   // Configura pinos de entrada com pull-up
-  DDRD &= ~((1 << PD2) | (1 << PD3) | (1 << PD4));
-  PORTD |= (1 << PD2) | (1 << PD3) | (1 << PD4);
+  DDRD &= ~((1 << PD2) | (1 << PD3));   // D2 (presença), D3 (chuva)
+  PORTD |= (1 << PD2) | (1 << PD3);     // pull-up
 
-  // Interrupção INT0 para borda de subida (rising edge)
+  // INT0 – sensor de presença (D2), borda de subida
   EICRA |= (1 << ISC01) | (1 << ISC00);
   EIMSK |= (1 << INT0);
 
-  // INT1 – borda de subida para atualizar LEDs
-  EICRA |= (1 << ISC11) | (1 << ISC10);
+  // INT1 – sensor de chuva (D3), qualquer mudança de nível
+  EICRA |= (1 << ISC10);     // ISC11 = 0, ISC10 = 1 → qualquer mudança
   EIMSK |= (1 << INT1);
-
-  // PCINT para PD4 (chuva)
-  PCICR |= (1 << PCIE2);
-  PCMSK2 |= (1 << PCINT20);
 
   // Timer1: modo CTC, prescaler 8, interrupção a cada 1ms
   TCCR1A = 0;
@@ -88,7 +84,7 @@ void setup() {
   delay(2000);
   lcd.clear();
 
-  while(1) {
+  while (1) {
     if (flagChuva) {
       flagChuva = false;
       atualizarDisplay();
@@ -122,14 +118,22 @@ void setup() {
 // Timer1 a cada 1ms
 ISR(TIMER1_COMPA_vect) {
   static uint16_t contador1ms = 0;
+  static uint16_t contadorLuz = 0;
+
   contador1ms++;
+  contadorLuz++;
 
   if (contador1ms >= 2000) {  // Atualiza DHT a cada 2s
     flagAtualizarDHT = true;
     contador1ms = 0;
   }
 
-  // Controle buzzer ligado por tempo fixo
+  if (contadorLuz >= 1000) {  // Atualiza luminosidade a cada 1s
+    flagAtualizarLEDs = true;
+    contadorLuz = 0;
+  }
+
+  // Controle buzzer
   if (buzzerLigado) {
     contadorBuzzer++;
     if (contadorBuzzer >= DURACAO_BUZZER_MS) {
@@ -138,13 +142,13 @@ ISR(TIMER1_COMPA_vect) {
     }
   }
 
-  // Debounce sensor chuva
+  // Debounce da chuva
   if (flagEventoChuva) {
     contadorDebounceChuva++;
     if (contadorDebounceChuva >= TEMPO_DEBOUNCE_CHUVA) {
-      // Após debounce, confirma estado estável
-      if (estaChovendo != estadoChuvaTentativa) { // atualiza só se mudou
-        estaChovendo = estadoChuvaTentativa;
+      bool novoEstado = !(PIND & (1 << PD3)); // ativo baixo
+      if (estaChovendo != novoEstado) {
+        estaChovendo = novoEstado;
         flagChuva = true;
         flagPrintChuva = true;
       }
@@ -153,30 +157,26 @@ ISR(TIMER1_COMPA_vect) {
   }
 }
 
-// ISR para sensor de presença (INT0) - detecta borda de subida
+// Sensor de presença (INT0 - D2)
 ISR(INT0_vect) {
-  if (PIND & (1 << PD2)) {  // borda de subida detectada
+  if (PIND & (1 << PD2)) {
     buzzerLigado = true;
     contadorBuzzer = 0;
     PORTB |= (1 << BUZZER_PIN);
   }
 }
 
-// ISR INT1 - acionado para atualizar LEDs conforme sensor de luz
+// Sensor de chuva (INT1 - D3)
 ISR(INT1_vect) {
-  flagAtualizarLEDs = true;
-}
-
-// Chuva via PCINT2
-ISR(PCINT2_vect) {
-  // Apenas captura o estado do pino e sinaliza que houve evento
-  estadoChuvaTentativa = !(PIND & (1 << PD4));
+  estadoChuvaTentativa = !(PIND & (1 << PD3));  // ativo baixo
   flagEventoChuva = true;
   contadorDebounceChuva = 0;
 }
 
 void verificarLuminosidade() {
   uint16_t lux = lightSensor.readLightLevel();
+  Serial.print("Luminosidade: ");
+  Serial.println(lux);
 
   if (lux < LIMIAR_LUZ) {
     PORTB |= (1 << LED1_PIN) | (1 << LED2_PIN);
