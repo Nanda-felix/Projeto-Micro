@@ -21,20 +21,22 @@ BH1750 lightSensor;
 #define LED1_PIN PB0    // D8
 #define LED2_PIN PB1    // D9
 
-#define LIMIAR_LUZ 50
+#define LIMIAR_LUZ 60
 
 // Flags e variáveis de controle
 volatile bool flagChuva = false;
-volatile bool flagLuminosidade = false;    // **removida a atribuição do timer para esta flag no código**
+volatile bool flagAtualizarLEDs = false;
 volatile bool flagAtualizarDHT = false;
-volatile bool flagAtualizarLEDs = false;   // NOVA flag para INT1
 
 volatile bool estaChovendo = false;
 
 volatile float ultimaTemperatura = 0;
 volatile float ultimaUmidade = 0;
 
-volatile bool presencaAtiva = false;
+// Controle do buzzer via Timer1
+volatile bool buzzerLigado = false;
+volatile uint16_t contadorBuzzer = 0;
+const uint16_t DURACAO_BUZZER_MS = 1000; // 3 segundos
 
 void verificarLuminosidade();
 void atualizarDisplay();
@@ -54,9 +56,8 @@ void setup() {
   DDRD &= ~((1 << PD2) | (1 << PD3) | (1 << PD4));
   PORTD |= (1 << PD2) | (1 << PD3) | (1 << PD4);
 
-  // Interrupções externas INT0 para sensor de presença em qualquer borda
-  EICRA |= (1 << ISC00);   // qualquer mudança
-  EICRA &= ~(1 << ISC01);
+  // Interrupção INT0 para borda de subida (rising edge)
+  EICRA |= (1 << ISC01) | (1 << ISC00);
   EIMSK |= (1 << INT0);
 
   // INT1 – borda de subida para atualizar LEDs
@@ -73,42 +74,37 @@ void setup() {
   OCR1A = 1999;  // 1ms com clock 16 MHz e prescaler 8
   TIMSK1 = (1 << OCIE1A);
 
-  sei();
+  sei(); // habilita interrupções globais
 
   lcd.setCursor(0, 0);
   lcd.print("Sistema Iniciado");
   delay(2000);
   lcd.clear();
-}
 
-void loop() {
-  if (flagChuva) {
-    flagChuva = false;
-    atualizarDisplay();
-  }
+  while(1) {
+    if (flagChuva) {
+      flagChuva = false;
+      atualizarDisplay();
+    }
 
-  if (flagAtualizarLEDs) {
-    flagAtualizarLEDs = false;
-    verificarLuminosidade();
-  }
+    if (flagAtualizarLEDs) {
+      flagAtualizarLEDs = false;
+      verificarLuminosidade();
+    }
 
-  if (flagAtualizarDHT && !estaChovendo) {
-    flagAtualizarDHT = false;
+    if (flagAtualizarDHT && !estaChovendo) {
+      flagAtualizarDHT = false;
 
-    float t = dht.readTemperature();
-    float h = dht.readHumidity();
+      float t = dht.readTemperature();
+      float h = dht.readHumidity();
 
-    if (!isnan(t)) ultimaTemperatura = t;
-    if (!isnan(h)) ultimaUmidade = h;
+      if (!isnan(t)) ultimaTemperatura = t;
+      if (!isnan(h)) ultimaUmidade = h;
 
-    atualizarDisplay();
-  }
+      atualizarDisplay();
+    }
 
-  // Liga/desliga buzzer conforme presença
-  if (presencaAtiva) {
-    PORTB |= (1 << BUZZER_PIN);
-  } else {
-    PORTB &= ~(1 << BUZZER_PIN);
+    // O controle do buzzer pelo Timer1 já está na ISR, então não precisa aqui
   }
 }
 
@@ -122,16 +118,25 @@ ISR(TIMER1_COMPA_vect) {
     flagAtualizarDHT = true;
     contador1ms = 0;
   }
+
+  // Controle do buzzer ligado por tempo fixo
+  if (buzzerLigado) {
+    contadorBuzzer++;
+    if (contadorBuzzer >= DURACAO_BUZZER_MS) {
+      buzzerLigado = false;
+      PORTB &= ~(1 << BUZZER_PIN);  // Desliga buzzer
+      
+    }
+  }
 }
 
-// ISR para sensor de presença (INT0) - detecta qualquer mudança
+// ISR para sensor de presença (INT0) - detecta borda de subida
 ISR(INT0_vect) {
-  if (PIND & (1 << PD2)) {
-    presencaAtiva = true;
-    Serial.println("Presença ATIVA");
-  } else {
-    presencaAtiva = false;
-    Serial.println("Presença INATIVA");
+  if (PIND & (1 << PD2)) {  // borda de subida detectada
+    buzzerLigado = true;
+    contadorBuzzer = 0;
+    PORTB |= (1 << BUZZER_PIN);  // Liga buzzer
+    Serial.println("Presença Detectada - buzzer ligado");
   }
 }
 
@@ -152,8 +157,6 @@ ISR(PCINT2_vect) {
 
 void verificarLuminosidade() {
   uint16_t lux = lightSensor.readLightLevel();
-  Serial.print("Luminosidade: ");
-  Serial.println(lux);
 
   if (lux < LIMIAR_LUZ) {
     PORTB |= (1 << LED1_PIN) | (1 << LED2_PIN);
