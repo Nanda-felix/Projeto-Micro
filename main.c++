@@ -27,6 +27,7 @@ BH1750 lightSensor;
 volatile bool flagChuva = false;
 volatile bool flagAtualizarLEDs = false;
 volatile bool flagAtualizarDHT = false;
+volatile bool flagPrintChuva = false;
 
 volatile bool estaChovendo = false;
 
@@ -36,7 +37,13 @@ volatile float ultimaUmidade = 0;
 // Controle do buzzer via Timer1
 volatile bool buzzerLigado = false;
 volatile uint16_t contadorBuzzer = 0;
-const uint16_t DURACAO_BUZZER_MS = 1000; // 3 segundos
+const uint16_t DURACAO_BUZZER_MS = 1000; // 1 segundo
+
+// Variáveis para debounce chuva via Timer1
+volatile bool flagEventoChuva = false;
+volatile uint16_t contadorDebounceChuva = 0;
+const uint16_t TEMPO_DEBOUNCE_CHUVA = 200; // debounce 200 ms
+volatile bool estadoChuvaTentativa = false;
 
 void verificarLuminosidade();
 void atualizarDisplay();
@@ -87,6 +94,12 @@ void setup() {
       atualizarDisplay();
     }
 
+    if (flagPrintChuva) {
+      flagPrintChuva = false;
+      Serial.print("Sensor chuva: ");
+      Serial.println(estaChovendo ? "CHOVENDO" : "SEM CHUVA");
+    }
+
     if (flagAtualizarLEDs) {
       flagAtualizarLEDs = false;
       verificarLuminosidade();
@@ -103,8 +116,6 @@ void setup() {
 
       atualizarDisplay();
     }
-
-    // O controle do buzzer pelo Timer1 já está na ISR, então não precisa aqui
   }
 }
 
@@ -113,19 +124,31 @@ ISR(TIMER1_COMPA_vect) {
   static uint16_t contador1ms = 0;
   contador1ms++;
 
-  // Atualiza DHT a cada 2s
-  if (contador1ms >= 2000) {
+  if (contador1ms >= 2000) {  // Atualiza DHT a cada 2s
     flagAtualizarDHT = true;
     contador1ms = 0;
   }
 
-  // Controle do buzzer ligado por tempo fixo
+  // Controle buzzer ligado por tempo fixo
   if (buzzerLigado) {
     contadorBuzzer++;
     if (contadorBuzzer >= DURACAO_BUZZER_MS) {
       buzzerLigado = false;
-      PORTB &= ~(1 << BUZZER_PIN);  // Desliga buzzer
-      
+      PORTB &= ~(1 << BUZZER_PIN);
+    }
+  }
+
+  // Debounce sensor chuva
+  if (flagEventoChuva) {
+    contadorDebounceChuva++;
+    if (contadorDebounceChuva >= TEMPO_DEBOUNCE_CHUVA) {
+      // Após debounce, confirma estado estável
+      if (estaChovendo != estadoChuvaTentativa) { // atualiza só se mudou
+        estaChovendo = estadoChuvaTentativa;
+        flagChuva = true;
+        flagPrintChuva = true;
+      }
+      flagEventoChuva = false;
     }
   }
 }
@@ -135,8 +158,7 @@ ISR(INT0_vect) {
   if (PIND & (1 << PD2)) {  // borda de subida detectada
     buzzerLigado = true;
     contadorBuzzer = 0;
-    PORTB |= (1 << BUZZER_PIN);  // Liga buzzer
-    Serial.println("Presença Detectada - buzzer ligado");
+    PORTB |= (1 << BUZZER_PIN);
   }
 }
 
@@ -147,12 +169,10 @@ ISR(INT1_vect) {
 
 // Chuva via PCINT2
 ISR(PCINT2_vect) {
-  static uint16_t debounce = 0;
-  if (debounce++ > 200) {
-    estaChovendo = !(PIND & (1 << PD4));
-    flagChuva = true;
-    debounce = 0;
-  }
+  // Apenas captura o estado do pino e sinaliza que houve evento
+  estadoChuvaTentativa = !(PIND & (1 << PD4));
+  flagEventoChuva = true;
+  contadorDebounceChuva = 0;
 }
 
 void verificarLuminosidade() {
